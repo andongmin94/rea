@@ -8,12 +8,12 @@ import {
   BinaryFormatFailure,
   BinaryMappingFailure,
   BinaryReader,
-  BinaryStringReadLimitFailure,
+  isBinaryStringReadLimit,
   createFileMappingIndex,
   mappedFileOffset,
   readMappedCString,
   type BinaryContainer,
-} from "./BinaryContainer.js";
+} from "../../domain/binaryContainer.js";
 
 it("preserves representable offsets for invalid file ranges", () => {
   const reader = new BinaryReader(Buffer.alloc(120), true, "elf");
@@ -47,8 +47,10 @@ it("distinguishes a mapped string read allowance from malformed bytes", () => {
   } catch (cause) {
     failure = cause;
   }
-  expect(failure).toBeInstanceOf(BinaryStringReadLimitFailure);
-  expect(failure).toMatchObject({ maximumBytes: 3 });
+  expect(isBinaryStringReadLimit(failure)).toBe(true);
+  expect(failure).toMatchObject({
+    failure: { kind: "limit", limit: { maximum: 3 } },
+  });
   expect(index.readCString(bytes, 100n, bytes.length).toString()).toBe(
     "long-name",
   );
