@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, readFile, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -11,6 +10,7 @@ import {
   selectNpmDownloadDuplicateDeletions,
   selectPrefixDeletions,
 } from "../../../scripts/ci/cache-retention.mjs";
+import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 
 const cache = (
   id: number,
@@ -472,7 +472,7 @@ describe("repeated cache ids", () => {
 });
 
 it("runs retention from the command line without deleting on an unsafe prefix", async () => {
-  const root = await mkdtemp(join(tmpdir(), "rea-cache-retention-"));
+  const root = await createTestTempDirectory("rea-cache-retention-");
   const log = join(root, "gh.log");
   const gh = join(root, "gh");
   await writeFile(
