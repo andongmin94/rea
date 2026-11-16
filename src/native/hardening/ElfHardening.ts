@@ -53,7 +53,7 @@ import {
   readElfDirectoryFromBuffer,
   type ElfProgramDeclaration,
   type NativeSection,
-} from "../metadata/NativeSectionDirectory.js";
+} from "../../domain/native/nativeSectionDirectory.js";
 
 const ET_EXEC = 2;
 const ET_DYN = 3;
@@ -124,6 +124,8 @@ const budgetFailure = (count: number, label: string): BinaryResourceFailure =>
     "structure",
     MAX_BINARY_HARDENING_TABLE_ENTRIES,
     `${label} has ${String(count)} entries, above the ${String(MAX_BINARY_HARDENING_TABLE_ENTRIES)}-entry structural budget. This release has no runtime override.`,
+    "structure",
+    "entries",
   );
 
 const budget = (count: number, label: string): void => {
