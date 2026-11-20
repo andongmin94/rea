@@ -26,6 +26,88 @@ const iteratorCloseSource = `
     const { useCustom = (holder.parent.items = custom), items: [read], next: { mode: projectedAfterAcquisition } } = holder.parent;
   `;
 
+const arrayPrototypeAliasSource = `
+  change();
+  function change() {
+    const proto = Reflect.getPrototypeOf([]);
+    proto[Symbol.iterator] = function* () {};
+  }
+  const pairs = [["first"]];
+  const [[aliasedPrototypeElement]] = pairs;
+  pairs[0][0] = "later";
+  `;
+
+const abruptObjectPatternSource = `
+  const box = { first: [0], empty: null, sibling: ["before"] };
+  const { first: [used], empty: {}, sibling: [unreachedSibling] } = box;
+  box.sibling[0] = "later";
+`;
+
+const firstDefaultSource = `
+  const defined = [0, ["one"]];
+  const [used = (defined[1][0] = "dormant"), [inactiveDefaultElement]] = defined;
+  defined[1][0] = "later";
+  const missing = [undefined, ["one"]];
+  const [other = (missing[1][0] = "active"), [activeDefaultElement]] = missing;
+  missing[1][0] = "later";
+`;
+
+const immutableTargetSource = `
+  const fixed = 0;
+  let beforeImmutable, afterImmutable;
+  const values = ["before", 1, "unreached"];
+  [beforeImmutable, fixed, afterImmutable] = values;
+  values[0] = "later";
+`;
+
+const classNameTargetSource = `
+  class OuterFixed {}
+  let afterOuterClass;
+  const outer = [1, "reachable"];
+  [OuterFixed, afterOuterClass] = outer;
+  class Fixed {
+    static {
+      let beforeClassName, afterClassName;
+      const inner = ["before", 1, "unreached"];
+      [beforeClassName, Fixed, afterClassName] = inner;
+    }
+  }
+`;
+
+const uninitializedTargetSource = `
+  let beforeUninitialized, afterUninitialized;
+  const cells = ["before", 1, "unreached"];
+  [beforeUninitialized, pending, afterUninitialized] = cells;
+  let pending;
+`;
+
+const declaratorOrderSource = `
+  let initializedEarlier, uninitializedLater;
+  const cells = [1, "paired"];
+  let earlier, readEarlier = ([earlier, initializedEarlier] = cells);
+  let readLater = ([later, uninitializedLater] = cells), later;
+`;
+
+const outerDeclarationSource = `
+  let ready, afterReady, beforeOuterLet, afterOuterLet;
+  const cells = ["before", 1, "unreached"];
+  { [ready, afterReady] = cells; }
+  { [beforeOuterLet, pending, afterOuterLet] = cells; }
+  let pending;
+`;
+
+const additionalFixtures = [
+  ["iterator-close.js", iteratorCloseSource],
+  ["array-prototype-alias.js", arrayPrototypeAliasSource],
+  ["abrupt-object-pattern.js", abruptObjectPatternSource],
+  ["first-default.js", firstDefaultSource],
+  ["immutable-target.js", immutableTargetSource],
+  ["class-name-target.js", classNameTargetSource],
+  ["uninitialized-target.js", uninitializedTargetSource],
+  ["declarator-order.js", declaratorOrderSource],
+  ["outer-let.js", outerDeclarationSource],
+] as const;
+
 const expectedDependencies = [
   ["declared", ["a"]],
   ["a", ["a"]],
@@ -33,11 +115,32 @@ const expectedDependencies = [
   ["fallback", ["a", "0"]],
   ["scalar", ["b"]],
   ["ordinary", ["0"]],
+  ["beforeImmutable", ["0"]],
+  ["afterImmutable", ["2"], "candidate"],
+  ["beforeClassName", ["0"]],
+  ["afterClassName", ["2"], "candidate"],
+  ["afterOuterClass", ["1"]],
+  ["beforeUninitialized", ["0"]],
+  ["afterUninitialized", ["2"], "candidate"],
+  ["initializedEarlier", ["1"]],
+  ["uninitializedLater", ["1"], "candidate"],
+  ["afterReady", ["1"]],
+  ["beforeOuterLet", ["0"]],
+  ["afterOuterLet", ["2"], "candidate"],
   ["arrayAssigned", ["0"]],
   ["elided", ["1"]],
   ["projected", ["items", "0"]],
   ["arrayObject", ["0", "mode"]],
   ["nestedElement", ["items", "0"]],
+  ["siblingObjectElement", ["sibling", "0"]],
+  ["projectedNumericInnerElement", ["pairs", "0", "0"]],
+  ["unreachedSibling", ["sibling", "0"], "candidate"],
+  ["innerElement", ["0", "0"]],
+  ["siblingInnerElement", ["1", "0"]],
+  ["inactiveDefaultElement", ["1", "0"]],
+  ["activeDefaultElement", ["1", "0"], "candidate"],
+  ["spreadElement", ["1"]],
+  ["aliasedPrototypeElement", ["0", "0"], "candidate"],
   ["selected", ["0"], "candidate"],
   ["beforeClose", ["label"]],
   ["consumed", ["items", "0", "mode"]],
@@ -47,6 +150,41 @@ const expectedDependencies = [
   ["replacedBeforeClose", ["next", "mode"]],
   ["replacedAfterClose", ["next", "mode"], "candidate"],
   ["projectedAfterAcquisition", ["parent", "next", "mode"], "candidate"],
+] as const;
+
+const tracedBindings = [
+  "declared",
+  "ordinary",
+  "beforeImmutable",
+  "afterImmutable",
+  "beforeClassName",
+  "afterClassName",
+  "afterOuterClass",
+  "beforeUninitialized",
+  "afterUninitialized",
+  "initializedEarlier",
+  "uninitializedLater",
+  "afterReady",
+  "beforeOuterLet",
+  "afterOuterLet",
+  "arrayAssigned",
+  "elided",
+  "projected",
+  "arrayObject",
+  "nestedElement",
+  "siblingObjectElement",
+  "projectedNumericInnerElement",
+  "unreachedSibling",
+  "innerElement",
+  "siblingInnerElement",
+  "inactiveDefaultElement",
+  "activeDefaultElement",
+  "spreadElement",
+  "aliasedPrototypeElement",
+  "selected",
+  "beforeClose",
+  "consumed",
+  "afterClose",
 ] as const;
 
 cliTest(
@@ -90,9 +228,20 @@ cliTest(
     const nestedArray = [{ mode: "read-time" }];
     const [{ mode: arrayObject }] = nestedArray;
     nestedArray[0].mode = "later";
-    const nestedSource = { items: ["nested"] };
-    const { items: [nestedElement] } = nestedSource;
+    const nestedSource = { items: ["nested"], empty: 0, sibling: ["sibling"] };
+    const { items: [nestedElement], empty: {}, sibling: [siblingObjectElement] } = nestedSource;
     nestedSource.items[0] = "later";
+    nestedSource.sibling[0] = "later";
+    const numericSource = { pairs: [["read-time"]] };
+    const { 0: [projectedNumericInnerElement] } = numericSource.pairs;
+    numericSource.pairs = [];
+    const nestedPairs = [["read-time"], ["sibling"]];
+    const [[innerElement] = ["fallback"], [siblingInnerElement]] = nestedPairs;
+    nestedPairs[0][0] = "later";
+    nestedPairs[1][0] = "later";
+    const spreadSource = [...["prefix"], "read-time"];
+    const [,spreadElement] = spreadSource;
+    spreadSource[1] = "later";
     const box = { items: [] };
     const iterator = box.items.values();
     const prototype = Reflect.getPrototypeOf(iterator);
@@ -104,7 +253,8 @@ cliTest(
     [selected] = after;
   `,
     );
-    await writeFile(join(root, "iterator-close.js"), iteratorCloseSource);
+    for (const [path, source] of additionalFixtures)
+      await writeFile(join(root, path), source);
     const output = await cli.run({
       arguments: ["analyze-javascript-application", root, "--json"],
     });
@@ -142,19 +292,7 @@ cliTest(
       ),
     ).toMatchObject({ resolution: "resolved" });
     const queryPath = join(root, "query.json");
-    for (const name of [
-      "declared",
-      "ordinary",
-      "arrayAssigned",
-      "elided",
-      "projected",
-      "arrayObject",
-      "nestedElement",
-      "selected",
-      "beforeClose",
-      "consumed",
-      "afterClose",
-    ]) {
+    for (const name of tracedBindings) {
       const binding = graph.nodes.find(
         ({ kind, label }) => kind === "binding" && label === name,
       );
@@ -182,7 +320,12 @@ cliTest(
           ]),
         },
       };
-      if (name === "selected" || name === "afterClose")
+      if (
+        expectedDependencies.some(
+          ([binding, , resolution]) =>
+            binding === name && resolution === "candidate",
+        )
+      )
         expect(trace.json).not.toMatchObject(relation);
       else expect(trace.json).toMatchObject(relation);
     }

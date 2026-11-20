@@ -42,6 +42,8 @@ import {
 import {
   bindingHasMemberWrites,
   bindingProjectedContentsMayChangeAt,
+  semanticAmbientArrayIterationUnknown,
+  semanticArrayPrototypeIterationMayChange,
 } from "./javascriptSemanticEffectLog.js";
 import { semanticContainer } from "./javascriptSemanticSlots.js";
 import {
@@ -125,23 +127,6 @@ interface MutationSelectionContext {
 }
 
 type ValueEffect = "write" | "escape";
-
-/** Only replacing or possibly selecting an iterator-bearing prototype slot changes iteration. */
-const arrayPrototypeIterationMayChange = (path: PropertyPath): boolean => {
-  // Array.prototype and Object.prototype are on native arrays' prototype
-  // chain. Their default constructor.prototype pairs return to the same owner.
-  let offset = 0;
-  while (path[offset] === "constructor" && path[offset + 1] === "prototype")
-    offset += 2;
-  const key = path[offset];
-  return (
-    key === undefined ||
-    key === null ||
-    typeof key === "object" ||
-    semanticArrayIndex(key) !== null ||
-    key === "__proto__"
-  );
-};
 
 /** Preserve uncertainty from property writes and references exposed to calls, yielding during traversal and fixpoint iteration. */
 
@@ -279,7 +264,11 @@ const localPropertyMethods = (
           (capture) => capture.depth === 1 && capture.ownEnumerable,
         )
       ) {
-        for (const prototype of semanticNativePrototypeChain(node, selected!)) {
+        for (const prototype of semanticNativePrototypeChain(
+          node,
+          selected!,
+          state,
+        )) {
           if (selected === null || typeof selected === "object")
             return undefined;
           const at = current.memberReadAt ?? root;
@@ -310,7 +299,7 @@ const localPropertyMethods = (
         }
       }
       const references = t.isArrayExpression(node)
-        ? semanticArrayPropertyReferences(node, [selected!])
+        ? semanticArrayPropertyReferences(node, [selected!], state)
         : remaining.length === 0 && accessor !== "invoke"
           ? semanticObjectAccessorReferences(
               node,
@@ -528,7 +517,11 @@ export function* collectSemanticMemberMutationsSteps(
   program: t.Program,
   state: JavaScriptSemanticAnalysisState,
   mayObserve: JavaScriptBindingIndex["mayObserve"],
-): Generator<void, void> {
+): Generator<void, ReadonlyMap<t.VariableDeclarator, t.AssignmentPattern>> {
+  const firstArrayDefaults = new Map<
+    t.VariableDeclarator,
+    t.AssignmentPattern
+  >();
   const deferredMapReceivers = new Set<
     t.CallExpression | t.OptionalCallExpression
   >();
@@ -782,7 +775,7 @@ export function* collectSemanticMemberMutationsSteps(
       recordRequiredEffect("node:process", path.slice(2), "write", node);
   const selections = new Map<string, readonly string[]>();
   const coveringPaths = new Map<string, SemanticPropertyPathCoverage>();
-  state.arrayIterationUnknown = false;
+  state.arrayIterationUnknown = semanticAmbientArrayIterationUnknown(state);
   // Definition collection finishes before this phase, so a scope's bindings no
   // longer change and one node resolves to one binding. Repeated visits of the
   // same node otherwise repeat the same scope walk.
@@ -1135,14 +1128,16 @@ export function* collectSemanticMemberMutationsSteps(
           if (
             (["Array", "Object"].includes(expression.name) &&
               (current.path[0] === "prototype" || current.path[0] === null) &&
-              arrayPrototypeIterationMayChange(current.path.slice(1))) ||
+              semanticArrayPrototypeIterationMayChange(
+                current.path.slice(1),
+              )) ||
             (["globalThis", "global", "window", "self"].includes(
               expression.name,
             ) &&
               (["Array", "Object"].includes(String(current.path[0])) ||
                 current.path[0] === null) &&
               (current.path[1] === "prototype" || current.path[1] === null) &&
-              arrayPrototypeIterationMayChange(current.path.slice(2)))
+              semanticArrayPrototypeIterationMayChange(current.path.slice(2)))
           )
             state.arrayIterationUnknown = true;
           if (lookup?.kind !== "uncertain-binding") continue;
@@ -1669,10 +1664,10 @@ export function* collectSemanticMemberMutationsSteps(
       t.isArrayExpression(expression) &&
       ((path[0] === "__proto__" &&
         (effect === "escape" || path.length > 1) &&
-        arrayPrototypeIterationMayChange(path.slice(1))) ||
+        semanticArrayPrototypeIterationMayChange(path.slice(1))) ||
         (path[0] === "constructor" &&
           path[1] === "prototype" &&
-          arrayPrototypeIterationMayChange(path.slice(2))))
+          semanticArrayPrototypeIterationMayChange(path.slice(2))))
     )
       state.arrayIterationUnknown = true;
     const references = referencedValues(
@@ -1897,6 +1892,14 @@ export function* collectSemanticMemberMutationsSteps(
           for (const target of semanticWriteTargets(execution.target))
             writeOnlyMembers.add(target);
       for (const source of semanticIterationSources(node, parent)) {
+        const first = source.arrayPattern?.elements[0];
+        if (
+          source.kind === "iteration" &&
+          t.isVariableDeclarator(node) &&
+          node.id === source.arrayPattern &&
+          t.isAssignmentPattern(first)
+        )
+          firstArrayDefaults.set(node, first);
         // Local stores retain their sources on member writes. Only the ambient
         // identity owner can establish that storing itself exposes a reference.
         if (
@@ -2045,9 +2048,20 @@ export function* collectSemanticMemberMutationsSteps(
       pattern,
       receiverCaptures,
     );
-    // A later-only write can invalidate the merged lattice without changing
-    // this acquisition. Leave the original capture on its established route.
-    if (captured === undefined || captured.storedSources.length === 0)
+    if (captured === undefined || captured.sources.length === 0) return false;
+    const originalOnly = captured.storedSources.length === 0;
+    // A later receiver write can hide the original slot in the merged value.
+    // Reuse the captured own-data source when that original receiver is proved.
+    if (
+      originalOnly &&
+      (receiver.members.length === 0 ||
+        captured.sources.length !== 1 ||
+        !semanticBindingAtRead(binding, receiver.root, state)
+          .hasDefiniteInitializer ||
+        !t.isObjectExpression(
+          unwrapJavaScriptExpression(captured.sources[0]!.node).node,
+        ))
+    )
       return false;
     const contentsMayChange = bindingProjectedContentsMayChangeAt(
       state,
@@ -2084,6 +2098,9 @@ export function* collectSemanticMemberMutationsSteps(
         const selection = native
           ? semanticArrayPatternCloseSelection(pattern, mutation, value, state)
           : undefined;
+        // The original-source path can discharge acquisition only when it
+        // adds no effects. Keep the ordinary escape for a possible close.
+        if (originalOnly && (!native || selection !== undefined)) return false;
         if (!native || selection !== undefined)
           markValue(
             alternative,
@@ -2282,6 +2299,7 @@ export function* collectSemanticMemberMutationsSteps(
   // Gathering effects can evaluate a primitive projection before its object
   // escapes. Final values must use the completed mutation state.
   clearSemanticValueCaches(state);
+  return firstArrayDefaults;
 }
 
 interface ReferencedValue extends JavaScriptSemanticObjectReference {
@@ -2379,7 +2397,7 @@ const referencedValues = (
     if (effect === "write" && path.length < 2) return [];
     return t.isObjectExpression(node)
       ? semanticObjectPropertyReferences(node, path, state)
-      : semanticArrayPropertyReferences(node, path);
+      : semanticArrayPropertyReferences(node, path, state);
   }
   if (t.isClass(node) || t.isNewExpression(node))
     return constructedReferenceValues(
