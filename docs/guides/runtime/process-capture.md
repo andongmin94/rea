@@ -523,7 +523,9 @@ absent when no finalization was attempted:
   exited.
   An `unverified` attempt may carry a `reason` string naming why: an unavailable
   identity and its reason, an inspection or signal error, or delivery that did
-  not settle within the bound (1000 ms). An attempt recorded `unverified` after
+  not settle within the fixed bound (1000 ms). That bound is implementation
+  policy with no runtime override, and a larger `finalization_ms` does not
+  extend it. An attempt recorded `unverified` after
   that bound can still complete later; it stays identity-checked, and its late
   result is not added to the record.
 - `elapsed_ms` is when REA observed the exit, relative to the start of
@@ -618,8 +620,10 @@ Every capture requires `truncation_details`, with separate accounting for:
   remain available and issued reads settle before final coverage is returned.
 
 The aggregate `truncated` flag summarizes these observations. Comparisons retain
-results for unaffected dimensions and mark affected dimensions unknown; an
-incomplete capture cannot locate the first divergence across all dimensions.
+results for unaffected dimensions. If the hash budget omits a file's digest,
+different retained digests for another path still mark the filesystem dimension
+`changed`. Incomplete captures leave the first divergence across all dimensions
+unknown.
 Trace assertions use coverage for the sources they select, so an assertion
 about complete raw terminal output need not fail because rendered snapshots
 were omitted. A trace difference applies to the dimensions identified by its

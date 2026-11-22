@@ -349,7 +349,7 @@ export const buildCapabilityInventory = (
     const effects = composedEffects(
       contract.name,
       contract.sessionEffects,
-      status.capabilities,
+      descriptors,
     );
     const annotations = annotationsFromEffects(effects);
     const facts = {
@@ -599,7 +599,7 @@ const workflowAvailabilityFor = (
                 : "provider_missing",
           remediation:
             policy.androidAnalysisAvailability?.remediation ??
-            "Set REA_JADX_MCP_JAR to the jadx-headless-mcp 0.7.1 release JAR (rea doctor --provider jadx names its download URL and SHA-256) and provide a full JDK on Linux, macOS, or Windows x64 with its matching bundled native controls.",
+            "Set REA_JADX_MCP_JAR to a caller-supplied jadx-headless-mcp JAR (rea doctor --provider jadx names its download URL and SHA-256) and provide a full JDK on Linux, macOS, or Windows x64 with its matching bundled native controls.",
         };
   if (kind === "adb-provider")
     return ownerProbeAvailability(
@@ -1227,7 +1227,7 @@ const reachableRequirements = (
 const composedEffects = (
   name: string,
   base: ToolEffects,
-  descriptors: readonly ProviderDescriptor[],
+  byOperation: ReadonlyMap<string, ProviderDescriptor>,
 ): ToolEffects => {
   const composition: ProviderComposition | undefined =
     name === "get_navigation_context"
@@ -1235,9 +1235,6 @@ const composedEffects = (
       : name === "inspect_address_context"
         ? ADDRESS_CONTEXT_EFFECT_COMPOSITION
         : ENHANCED_REQUIREMENTS.get(name);
-  const byOperation = new Map(
-    descriptors.map((descriptor) => [descriptor.operation, descriptor]),
-  );
   const reachable =
     composition === undefined
       ? []
@@ -1248,8 +1245,9 @@ const composedEffects = (
         : reachableRequirements(composition, byOperation);
   const operations = new Set<string>([name, ...reachable]);
   const effects = { ...base };
-  for (const descriptor of descriptors) {
-    if (!operations.has(descriptor.operation)) continue;
+  for (const operation of operations) {
+    const descriptor = byOperation.get(operation);
+    if (descriptor === undefined) continue;
     const source = descriptor.effects;
     effects.mutatesTarget ||= source.mutates_artifact;
     effects.launchesProcess ||= source.launches_process;
